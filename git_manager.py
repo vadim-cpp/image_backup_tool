@@ -9,14 +9,12 @@ class GitManager:
         self.log_signal = log_signal
         self.repo_path = os.path.join(os.path.expanduser("~"), ".image_backup_repo")
         self.repo = None
-        print("self.settings: ", settings)
-        print("self.repo_path: ", self.repo_path)
 
     def init_repo(self):
         try:
             # Клонируем или открываем репозиторий
             if not os.path.exists(self.repo_path):
-                os.makedirs(self.repo_path)
+                os.makedirs(self.repo_path, exist_ok=True)
                 self.log_signal.emit(f"Клонирование репозитория в {self.repo_path}")
                 self.repo = Repo.clone_from(self.settings['repo_url'], self.repo_path)
             else:

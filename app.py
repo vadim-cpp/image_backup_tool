@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import pyqtSlot, QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
 from widgets import SettingsWidget, LogWidget
-from backup_worker import BackupWorker
+from scan_worker import ScanWorker
 
 
 class ImageBackupApp(QApplication):
@@ -46,14 +46,9 @@ class MainWindow(QMainWindow):
         # Кнопки управления
         button_layout = QHBoxLayout()
 
-        self.start_btn = QPushButton("Старт")
-        self.start_btn.clicked.connect(self.start_backup)
-        button_layout.addWidget(self.start_btn)
-
-        self.stop_btn = QPushButton("Стоп")
-        self.stop_btn.clicked.connect(self.stop_backup)
-        self.stop_btn.setEnabled(False)
-        button_layout.addWidget(self.stop_btn)
+        self.scan_btn = QPushButton("Сканировать")
+        self.scan_btn.clicked.connect(self.scan_folder)
+        button_layout.addWidget(self.scan_btn)
 
         self.restore_btn = QPushButton("Восстановить")
         self.restore_btn.clicked.connect(self.restore_backup)
@@ -61,64 +56,43 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(button_layout)
 
-        # Инициализация worker и потока
-        self.backup_worker = None
-        self.thread = None
-
         # Загрузка настроек
         self.settings_widget.load_settings()
 
     @pyqtSlot()
-    def start_backup(self):
-        # Получаем настройки
+    def scan_folder(self):
+        """Сканирует папку и обрабатывает новые изображения"""
         settings = self.settings_widget.get_settings()
 
-        # Проверяем обязательные поля
-        if not settings['watch_folder'] or not settings['repo_url']:
-            self.log_widget.append_log("Ошибка: Укажите папку для наблюдения и URL репозитория")
+        if not settings['watch_folder']:
+            self.log_widget.append_log("Ошибка: Укажите папку для сканирования")
+            return
+
+        if not settings['repo_url']:
+            self.log_widget.append_log("Ошибка: Укажите URL репозитория")
             return
 
         # Сохраняем настройки
         self.settings_widget.save_settings()
 
-        # Создаем и запускаем worker в отдельном потоке
-        self.thread = QThread()
-        self.backup_worker = BackupWorker(settings)
-        self.backup_worker.moveToThread(self.thread)
+        # Запускаем сканирование в отдельном потоке
+        thread = QThread()
+        worker = ScanWorker(settings)
+        worker.moveToThread(thread)
 
-        # Подключаем сигналы
-        self.backup_worker.log_signal.connect(self.log_widget.append_log)
-        self.backup_worker.finished.connect(self.on_worker_finished)
-        self.thread.started.connect(self.backup_worker.run)
+        worker.log_signal.connect(self.log_widget.append_log)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
-        # Меняем состояние UI
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.settings_widget.setEnabled(False)
+        thread.started.connect(worker.scan)
+        thread.start()
 
-        # Запускаем поток
-        self.thread.start()
+        # Блокируем кнопку на время сканирования
+        self.scan_btn.setEnabled(False)
+        thread.finished.connect(lambda: self.scan_btn.setEnabled(True))
 
-        self.log_widget.append_log("Запуск мониторинга...")
-
-    @pyqtSlot()
-    def stop_backup(self):
-        if self.backup_worker:
-            self.backup_worker.stop()
-            self.log_widget.append_log("Остановка мониторинга...")
-
-    @pyqtSlot()
-    def on_worker_finished(self):
-        if self.thread:
-            self.thread.quit()
-            self.thread.wait()
-
-        # Восстанавливаем состояние UI
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self.settings_widget.setEnabled(True)
-
-        self.log_widget.append_log("Мониторинг остановлен")
+        self.log_widget.append_log("Запуск сканирования...")
 
     @pyqtSlot()
     def restore_backup(self):
@@ -130,13 +104,19 @@ class MainWindow(QMainWindow):
 
         # Запускаем восстановление в отдельном потоке
         thread = QThread()
-        worker = BackupWorker(settings)
+        worker = ScanWorker(settings)
         worker.moveToThread(thread)
 
         worker.log_signal.connect(self.log_widget.append_log)
         worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
 
         thread.started.connect(worker.restore)
         thread.start()
+
+        # Блокируем кнопку на время восстановления
+        self.restore_btn.setEnabled(False)
+        thread.finished.connect(lambda: self.restore_btn.setEnabled(True))
 
         self.log_widget.append_log("Запуск восстановления...")

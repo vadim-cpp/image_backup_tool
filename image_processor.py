@@ -10,6 +10,10 @@ class ImageProcessor:
     def process(self, image_path):
         try:
             with Image.open(image_path) as img:
+                # Конвертируем в RGB если нужно (для JPEG)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+
                 # Изменяем размер если нужно
                 if self.settings['resize_enabled']:
                     img.thumbnail((self.settings['max_size'], self.settings['max_size']), Image.Resampling.LANCZOS)
