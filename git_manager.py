@@ -7,7 +7,8 @@ class GitManager:
     def __init__(self, settings, log_signal):
         self.settings = settings
         self.log_signal = log_signal
-        self.repo_path = os.path.join(os.path.expanduser("~"), ".image_backup_repo")
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.repo_path = os.path.join(current_dir, "backup_repo")
         self.repo = None
 
     def init_repo(self):
@@ -48,6 +49,30 @@ class GitManager:
         except GitCommandError as e:
             self.log_signal.emit(f"Ошибка Git при добавлении файла: {str(e)}")
 
+    def add_multiple_to_repo(self, file_paths):
+        """Добавляет несколько файлов одним коммитом"""
+        try:
+            added_files = []
+
+            for file_path in file_paths:
+                # Копируем файл в репозиторий
+                repo_file_path = os.path.join(self.repo_path, os.path.basename(file_path))
+                shutil.copy2(file_path, repo_file_path)
+                added_files.append(os.path.basename(file_path))
+
+            # Добавляем все файлы одним коммитом
+            self.repo.index.add(added_files)
+            self.repo.index.commit(f"Add {len(added_files)} images")
+
+            # Пушим изменения
+            origin = self.repo.remote('origin')
+            origin.push()
+
+            self.log_signal.emit(f"Добавлено файлов в репозиторий: {len(added_files)}")
+
+        except GitCommandError as e:
+            self.log_signal.emit(f"Ошибка Git при добавлении файлов: {str(e)}")
+
     def restore_repo(self):
         try:
             restore_path = os.path.join(os.path.expanduser("~"), "restored_images")
@@ -79,3 +104,46 @@ class GitManager:
         except Exception as e:
             self.log_signal.emit(f"Ошибка восстановления: {str(e)}")
             return False
+
+    def process(self, image_path):
+        try:
+            with Image.open(image_path) as img:
+                # Конвертируем в RGB если нужно (для JPEG)
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+
+                # Изменяем размер если нужно
+                if self.settings['resize_enabled']:
+                    img.thumbnail((self.settings['max_size'], self.settings['max_size']), Image.Resampling.LANCZOS)
+
+                # Определяем формат сохранения
+                format_map = {
+                    'webp': 'WEBP',
+                    'jpeg': 'JPEG',
+                    'avif': 'AVIF'
+                }
+                save_format = format_map.get(self.settings['compression_format'], 'WEBP')
+
+                # Создаем имя файла (сохраняем оригинальное имя)
+                base_name = os.path.splitext(os.path.basename(image_path))[0]
+                output_filename = f"{base_name}_compressed.{self.settings['compression_format']}"
+                output_path = os.path.join(self.processed_dir, output_filename)
+
+                # Сохраняем с нужным качеством
+                save_params = {
+                    'quality': self.settings['compression_quality'],
+                    'optimize': True
+                }
+
+                # Особые параметры для WebP
+                if save_format == 'WEBP':
+                    save_params['method'] = 6  # Максимальное сжатие
+
+                img.save(output_path, save_format, **save_params)
+
+                self.log_signal.emit(f"Изображение обработано: {output_path}")
+                return output_path
+
+        except Exception as e:
+            self.log_signal.emit(f"Ошибка обработки изображения {image_path}: {str(e)}")
+            return None
