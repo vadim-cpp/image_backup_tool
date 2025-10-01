@@ -1,6 +1,7 @@
 import os
 import shutil
 from git import Repo, GitCommandError
+import base64
 
 
 class GitManager:
@@ -10,44 +11,114 @@ class GitManager:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.repo_path = os.path.join(current_dir, "backup_repo")
         self.repo = None
+        self.credentials = None
+
+    def set_credentials(self, credentials):
+        """Устанавливает учетные данные для аутентификации"""
+        self.credentials = credentials
+
+    def get_auth_url(self, repo_url):
+        """Формирует URL с аутентификацией"""
+        if not self.credentials:
+            return repo_url
+
+        if self.credentials.get('auth_type') == 'token':
+            # Для token аутентификации
+            if 'github.com' in repo_url:
+                return repo_url.replace(
+                    'https://github.com/',
+                    f'https://{self.credentials["token"]}@github.com/'
+                )
+            elif 'gitlab.com' in repo_url:
+                return repo_url.replace(
+                    'https://gitlab.com/',
+                    f'https://oauth2:{self.credentials["token"]}@gitlab.com/'
+                )
+            else:
+                # Общий случай для token
+                return repo_url.replace(
+                    'https://',
+                    f'https://{self.credentials["username"]}:{self.credentials["token"]}@'
+                )
+        else:
+            # Для basic аутентификации
+            return repo_url.replace(
+                'https://',
+                f'https://{self.credentials["username"]}:{self.credentials["password"]}@'
+            )
 
     def init_repo(self):
         try:
+            # Загружаем сохраненные учетные данные
+            self.load_credentials_from_settings()
+
+            repo_url = self.settings['repo_url']
+
+            # Если есть учетные данные, формируем URL с аутентификацией
+            if self.credentials:
+                auth_url = self.get_auth_url(repo_url)
+            else:
+                auth_url = repo_url
+
             # Клонируем или открываем репозиторий
             if not os.path.exists(self.repo_path):
                 os.makedirs(self.repo_path, exist_ok=True)
                 self.log_signal.emit(f"Клонирование репозитория в {self.repo_path}")
-                self.repo = Repo.clone_from(self.settings['repo_url'], self.repo_path)
+                self.repo = Repo.clone_from(auth_url, self.repo_path)
             else:
                 self.log_signal.emit("Открытие существующего репозитория")
                 self.repo = Repo(self.repo_path)
                 # Pull последних изменений
                 origin = self.repo.remote('origin')
-                origin.pull()
+
+                # Для операций pull/push также используем аутентификацию
+                with self.repo.git.custom_environment(GIT_ASKPASS='echo',
+                                                      GIT_USERNAME=self.credentials.get('username', ''),
+                                                      GIT_PASSWORD=self.credentials.get('password', '')):
+                    origin.pull()
 
             return True
         except GitCommandError as e:
             self.log_signal.emit(f"Ошибка Git: {str(e)}")
+
+            # Если ошибка аутентификации, запрашиваем учетные данные
+            if 'authentication' in str(e).lower() or '401' in str(e):
+                self.log_signal.emit("Требуется аутентификация для доступа к репозиторию")
+                return 'auth_required'
+
             return False
 
-    def add_to_repo(self, file_path):
-        try:
-            # Копируем файл в репозиторий
-            repo_file_path = os.path.join(self.repo_path, os.path.basename(file_path))
-            shutil.copy2(file_path, repo_file_path)
+    def load_credentials_from_settings(self):
+        """Загружает сохраненные учетные данные"""
+        from PyQt5.QtCore import QSettings
 
-            # Добавляем и коммитим
-            self.repo.index.add([os.path.basename(file_path)])
-            self.repo.index.commit(f"Add {os.path.basename(file_path)}")
+        settings = QSettings("ImageBackupTool", "Auth")
 
-            # Пушим изменения
-            origin = self.repo.remote('origin')
-            origin.push()
+        if settings.value("saved", False, type=bool):
+            try:
+                credentials = {}
 
-            self.log_signal.emit(f"Файл {os.path.basename(file_path)} добавлен в репозиторий")
+                if settings.value("username"):
+                    username = base64.b64decode(
+                        settings.value("username").encode()).decode()
+                    credentials['username'] = username
 
-        except GitCommandError as e:
-            self.log_signal.emit(f"Ошибка Git при добавлении файла: {str(e)}")
+                if settings.value("password"):
+                    password = base64.b64decode(
+                        settings.value("password").encode()).decode()
+                    credentials['password'] = password
+
+                if settings.value("token"):
+                    token = base64.b64decode(
+                        settings.value("token").encode()).decode()
+                    credentials['token'] = token
+
+                credentials['auth_type'] = settings.value("auth_type", "password")
+                self.credentials = credentials
+
+            except Exception as e:
+                self.log_signal.emit(f"Ошибка загрузки учетных данных: {str(e)}")
+                self.credentials = None
 
     def add_multiple_to_repo(self, file_paths):
         """Добавляет несколько файлов одним коммитом"""
@@ -64,14 +135,26 @@ class GitManager:
             self.repo.index.add(added_files)
             self.repo.index.commit(f"Add {len(added_files)} images")
 
-            # Пушим изменения
+            # Пушим изменения с аутентификацией
             origin = self.repo.remote('origin')
-            origin.push()
+
+            if self.credentials:
+                with self.repo.git.custom_environment(GIT_ASKPASS='echo',
+                                                      GIT_USERNAME=self.credentials.get('username', ''),
+                                                      GIT_PASSWORD=self.credentials.get('password', '')):
+                    origin.push()
+            else:
+                origin.push()
 
             self.log_signal.emit(f"Добавлено файлов в репозиторий: {len(added_files)}")
 
         except GitCommandError as e:
             self.log_signal.emit(f"Ошибка Git при добавлении файлов: {str(e)}")
+
+            # Если ошибка аутентификации
+            if 'authentication' in str(e).lower() or '403' in str(e) or '401' in str(e):
+                self.log_signal.emit("Ошибка аутентификации при push")
+                return 'auth_required'
 
     def restore_repo(self):
         try:

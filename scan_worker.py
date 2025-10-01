@@ -8,6 +8,7 @@ class ScanWorker(QObject):
     log_signal = pyqtSignal(str)
     files_found = pyqtSignal(list)
     finished = pyqtSignal()
+    auth_required = pyqtSignal()
 
     def __init__(self, settings):
         super().__init__()
@@ -66,7 +67,6 @@ class ScanWorker(QObject):
     def commit_files(self):
         """Обрабатывает и фиксирует выбранные файлы в репозитории"""
         try:
-            # Импортируем здесь, чтобы избежать проблем с многопоточностью
             from git_manager import GitManager
             from image_processor import ImageProcessor
 
@@ -79,7 +79,14 @@ class ScanWorker(QObject):
 
             # Инициализируем репозиторий
             git_manager = GitManager(self.settings, self.log_signal)
-            if not git_manager.init_repo():
+            result = git_manager.init_repo()
+
+            if result == 'auth_required':
+                self.log_signal.emit("Требуется аутентификация")
+                self.auth_required.emit()
+                self.finished.emit()
+                return
+            elif not result:
                 self.log_signal.emit("Ошибка инициализации репозитория")
                 self.finished.emit()
                 return
@@ -97,16 +104,21 @@ class ScanWorker(QObject):
 
             if processed_files:
                 # Добавляем все файлы одним коммитом
-                git_manager.add_multiple_to_repo(processed_files)
-                self.log_signal.emit(f"Успешно зафиксировано файлов: {len(processed_files)}")
+                result = git_manager.add_multiple_to_repo(processed_files)
 
-                # Очищаем временные файлы после успешной фиксации
-                for processed_file in processed_files:
-                    try:
-                        if os.path.exists(processed_file):
-                            os.remove(processed_file)
-                    except Exception as e:
-                        self.log_signal.emit(f"Ошибка при удалении временного файла: {str(e)}")
+                if result == 'auth_required':
+                    self.log_signal.emit("Ошибка аутентификации при отправке")
+                    self.auth_required.emit()
+                else:
+                    self.log_signal.emit(f"Успешно зафиксировано файлов: {len(processed_files)}")
+
+                    # Очищаем временные файлы после успешной фиксации
+                    for processed_file in processed_files:
+                        try:
+                            if os.path.exists(processed_file):
+                                os.remove(processed_file)
+                        except Exception as e:
+                            self.log_signal.emit(f"Ошибка при удалении временного файла: {str(e)}")
             else:
                 self.log_signal.emit("Нет файлов для фиксации")
 

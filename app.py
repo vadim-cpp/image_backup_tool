@@ -5,6 +5,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSpinBox, QComboBox, QSystemTrayIcon, QMenu, QAction, QMessageBox, QDialog)
 from PyQt5.QtCore import pyqtSlot, QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QIcon
+
+from auth_dialog import AuthDialog
 from widgets import SettingsWidget, LogWidget
 from scan_worker import ScanWorker
 from selection_dialog import FileSelectionDialog
@@ -60,6 +62,14 @@ class MainWindow(QMainWindow):
         # Загрузка настроек
         self.settings_widget.load_settings()
 
+        auth_layout = QHBoxLayout()
+        self.auth_btn = QPushButton("Настройки авторизации")
+        self.auth_btn.clicked.connect(self.show_auth_dialog)
+        auth_layout.addWidget(self.auth_btn)
+        auth_layout.addStretch()
+
+        layout.addLayout(auth_layout)
+
         # Ссылки на потоки и воркеры
         self.scan_thread = None
         self.scan_worker = None
@@ -67,6 +77,16 @@ class MainWindow(QMainWindow):
         self.commit_worker = None
         self.restore_thread = None
         self.restore_worker = None
+
+    @pyqtSlot()
+    def show_auth_dialog(self):
+        """Показывает диалог авторизации"""
+        try:
+            dialog = AuthDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                self.log_widget.append_log("Учетные данные сохранены")
+        except Exception as e:
+            self.log_widget.append_log(f"Ошибка в диалоге авторизации: {str(e)}")
 
     @pyqtSlot()
     def scan_folder(self):
@@ -98,6 +118,8 @@ class MainWindow(QMainWindow):
             self.scan_worker.log_signal.connect(self.log_widget.append_log)
             self.scan_worker.files_found.connect(self.on_files_found)
             self.scan_worker.finished.connect(self.on_scan_finished)
+            # Добавляем обработчик для запроса аутентификации
+            self.scan_worker.auth_required.connect(self.handle_auth_required)
 
             self.scan_thread.started.connect(self.scan_worker.scan)
             self.scan_thread.start()
@@ -109,6 +131,11 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.log_widget.append_log(f"Ошибка при запуске сканирования: {str(e)}")
             self.log_widget.append_log(traceback.format_exc())
+
+    def handle_auth_required(self):
+        """Обрабатывает запрос на аутентификацию"""
+        self.log_widget.append_log("Требуется аутентификация для доступа к репозиторию")
+        self.show_auth_dialog()
 
     @pyqtSlot()
     def on_scan_finished(self):
